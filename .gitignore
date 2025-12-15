@@ -1,0 +1,17 @@
+Echo/.vscode/c_cpp_properties.json
+/Echo/.vscode
+Echo/client.exe
+Echo/saved_fileOIP.webp
+Echo/server.exe
+UDP/client.exe
+UDP/relay.exe
+UDP/server.exe
+.vscode/c_cpp_properties.jsonZone.Identifier
+*.Identifier
+*.o
+/FileSharingP2P/.vscode
+.vscode/c_cpp_properties.json
+*.txt
+/FileSharingP2P/files_to_share
+FileSharingP2P/server
+FileSharingP2P/client
