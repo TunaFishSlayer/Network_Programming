@@ -48,11 +48,7 @@ static void print_message(const Message* m, const char* direction) {
     if (m->email[0]) printf("  email: %s\n", m->email);
     if (m->username[0]) printf("  username: %s\n", m->username);
     if (m->access_token[0]) {
-        char masked[80];
-        int show = (int)strlen(m->access_token);
-        if (show > 8) show = 8;
-        snprintf(masked, sizeof(masked), "%.*s...", show, m->access_token);
-        printf("  access_token: %s\n", masked);
+        printf("  access_token: %s\n", m->access_token);
     }
     if (m->filename[0]) printf("  filename: %s\n", m->filename);
     if (m->filehash[0]) printf("  filehash: %s\n", m->filehash);
@@ -66,7 +62,7 @@ static void print_message(const Message* m, const char* direction) {
 
 static void print_search_response(const SearchResponse* sr) {
     if (!sr) return;
-    printf("[PAYLOAD] SearchResponse: code=%d, count=%d\n", sr->response_code, sr->count);
+    printf("[PAYLOAD] SearchResponse: count=%d\n", sr->count);
     for (int i = 0; i < sr->count && i < 10; i++) {
         printf("  #%d: %s (hash:%s) size=%ld chunk=%d\n", i+1,
                sr->files[i].filename, sr->files[i].filehash,
@@ -76,7 +72,7 @@ static void print_search_response(const SearchResponse* sr) {
 
 static void print_find_response(const FindResponse* fr) {
     if (!fr) return;
-    printf("[PAYLOAD] FindResponse: code=%d, count=%d\n", fr->response_code, fr->count);
+    printf("[PAYLOAD] FindResponse: count=%d\n", fr->count);
     for (int i = 0; i < fr->count && i < 10; i++) {
         printf("  #%d: peer %s:%d\n", i+1, fr->peers[i].ip, fr->peers[i].port);
     }
