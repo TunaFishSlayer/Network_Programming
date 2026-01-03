@@ -16,10 +16,8 @@ extern char client_ip[MAX_IP];
 
 // Hàm tiện ích
 void calculate_file_hash(const char* filepath, char* hash_output);
-void calculate_chunk_hash(const char* data, int size, char* hash_output); // Chưa dùng, giữ lại cho tính toàn vẹn
+void calculate_chunk_hash(const char* data, int size, char* hash_output); 
 int set_socket_timeout(int sock, int seconds);
-
-// Request id generator for concurrent requests
-uint32_t get_next_request_id(void);
+int get_local_ip(char* buffer, size_t buflen);
 
 #endif

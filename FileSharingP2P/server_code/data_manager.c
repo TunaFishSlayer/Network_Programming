@@ -300,6 +300,24 @@ void cleanup_disconnected_users() {
     pthread_mutex_unlock(&connected_users_mutex);
 }
 
+int is_user_already_connected(const char* email) {
+    if (!email) return 0;
+    
+    pthread_mutex_lock(&connected_users_mutex);
+    
+    ConnectedUser* current = connected_users;
+    while (current) {
+        if (strcmp(current->email, email) == 0) {
+            pthread_mutex_unlock(&connected_users_mutex);
+            return 1;  // User is already connected
+        }
+        current = current->next;
+    }
+    
+    pthread_mutex_unlock(&connected_users_mutex);
+    return 0;  // User is not connected
+}
+
 // ----------------------------------------------------------------
 //                          CHỨC NĂNG LOGIC SERVER
 // ----------------------------------------------------------------
@@ -475,6 +493,8 @@ int unpublish_file(const char* filehash, const char* owner_email) {
     return file_removed;
 }
 
+
+
 char* create_session(const char* email) {
     pthread_mutex_lock(&sessions_mutex);
     
@@ -585,7 +605,11 @@ int validate_filename(const char* filename) {
 
 SearchResponse search_files(const char* keyword) {
     SearchResponse response;
-    response.response_code = RESP_SUCCESS;
+    memset(&response, 0, sizeof(SearchResponse));
+    
+    // Initialize header fields (will be set by caller, but good practice)
+    response.header.command = CMD_SEARCH;
+    response.status = RESP_SUCCESS;
     response.count = 0;
     
     pthread_mutex_lock(&files_mutex);
@@ -623,16 +647,76 @@ SearchResponse search_files(const char* keyword) {
     pthread_mutex_unlock(&files_mutex);
     
     if (response.count == 0) {
-        response.response_code = RESP_NOT_FOUND;
+        response.status = RESP_NOT_FOUND;
     }
     
     return response;
 }
 
+SearchResponse browse_all_files(void) {
+    SearchResponse response;
+    memset(&response, 0, sizeof(SearchResponse));
+
+    response.header.command = CMD_BROWSE_FILES;
+    response.status = RESP_SUCCESS;
+    response.count = 0;
+
+    pthread_mutex_lock(&files_mutex);
+
+    SharedFile* current = files;
+
+    // Tránh trùng filehash
+    char seen_hashes[100][MAX_HASH];
+    int seen_count = 0;
+
+    while (current && response.count < 100) {
+
+        int already_added = 0;
+        for (int i = 0; i < seen_count; i++) {
+            if (strcmp(seen_hashes[i], current->filehash) == 0) {
+                already_added = 1;
+                break;
+            }
+        }
+
+        if (!already_added) {
+            strncpy(response.files[response.count].filename,
+                    current->filename, MAX_FILENAME - 1);
+            strncpy(response.files[response.count].filehash,
+                    current->filehash, MAX_HASH - 1);
+            response.files[response.count].file_size = current->file_size;
+            response.files[response.count].chunk_size = current->chunk_size;
+
+            strncpy(seen_hashes[seen_count],
+                    current->filehash, MAX_HASH - 1);
+
+            seen_count++;
+            response.count++;
+        }
+
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&files_mutex);
+
+    if (response.count == 0) {
+        response.status = RESP_NOT_FOUND;
+    }
+
+    return response;
+}
+
 FindResponse find_peers(const char* filehash) {
-    FindResponse resp = {0};
+    FindResponse resp;
+    memset(&resp, 0, sizeof(FindResponse));
+    
+    // Initialize header fields
+    resp.header.command = CMD_FIND;
+    resp.status = RESP_SUCCESS;
+    resp.count = 0;
     
     if (!filehash) {
+        resp.status = RESP_NOT_FOUND;
         return resp;
     }
 
@@ -693,6 +777,10 @@ FindResponse find_peers(const char* filehash) {
         }
     }
     pthread_mutex_unlock(&connected_users_mutex);
+    
+    if (resp.count == 0) {
+        resp.status = RESP_NOT_FOUND;
+    }
     
     return resp;
 }

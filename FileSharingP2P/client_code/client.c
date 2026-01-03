@@ -18,10 +18,11 @@ void display_menu() {
     printf("\n=== MENU ===\n");
     if (logged_in) {
         printf("Người dùng: %s\n", current_username);
-        printf("1. Tìm kiếm file\n");
-        printf("2. Công bố file\n");
-        printf("3. Hủy công bố file\n");
-        printf("4. Thoát/Đăng xuất\n");
+        printf("1. Xem danh sách file chia sẻ\n");
+        printf("2. Tìm kiếm file\n");
+        printf("3. Công bố file\n");
+        printf("4. Hủy công bố file\n");
+        printf("5. Thoát/Đăng xuất\n");
     } else {
         printf("1. Đăng ký\n");
         printf("2. Đăng nhập\n");
@@ -64,10 +65,15 @@ int main() {
         return 1;
     }
     
-    printf("✓ Đã kết nối tới server: %s:%d\n", server_ip, SERVER_PORT);
+    printf("Đã kết nối tới server: %s:%d\n", server_ip, SERVER_PORT);
     
-    strcpy(client_ip, "127.0.0.1"); 
-    printf("Sử dụng IP P2P: %s để công bố file.\n", client_ip);
+    if (get_local_ip(client_ip, sizeof(client_ip))) {
+        printf(" Phát hiện IP mạng LAN: %s\n", client_ip);
+    } else {
+        strcpy(client_ip, "127.0.0.1");
+        printf("Cảnh báo: Không tìm thấy IP mạng, sử dụng localhost\n");
+    }
+    printf("P2P server sẽ sử dụng IP: %s để công bố file.\n", client_ip);
     
     while (1) {
         display_menu();
@@ -124,7 +130,40 @@ int main() {
         } else {
             // --- XỬ LÝ KHI ĐÃ ĐĂNG NHẬP
             switch (choice) {
-                case 1: { 
+                case 1: {   
+                    printf("\n=== DANH SÁCH FILE ĐANG ĐƯỢC CHIA SẺ ===\n");
+
+                    BrowseFilesResponse resp = browse_files();
+
+                    if (resp.count == 0) {
+                        printf("Hiện chưa có file nào được chia sẻ.\n");
+                        break;
+                    }
+
+                    for (int i = 0; i < resp.count; i++) {
+                        printf("%d. %s (%ld bytes)\n",
+                            i + 1,
+                            resp.files[i].filename,
+                            resp.files[i].file_size);
+                        printf("   Hash: %.16s...\n", resp.files[i].filehash);
+                    }
+
+                    int sel;
+                    printf("\nChọn file để tải (0 = hủy): ");
+                    scanf("%d", &sel);
+
+                    if (sel > 0 && sel <= resp.count) {
+                        sel--;
+                        download_file_chunked(
+                            resp.files[sel].filehash,
+                            resp.files[sel].filename,
+                            resp.files[sel].file_size,
+                            resp.files[sel].chunk_size
+                        );
+                    }
+                    break;
+                }
+                case 2: { 
                     printf("Từ khóa tìm kiếm: ");
                     scanf("%s", keyword);
                     SearchResponse resp = search_file(keyword);
@@ -156,19 +195,19 @@ int main() {
                     break;
                 }
                     
-                case 2: 
+                case 3: 
                     printf("Tên file (trong %s): ", shared_dir);
                     scanf("%s", filename);
                     publish_file(filename);
                     break;
                     
-                case 3: 
+                case 4: 
                     printf("Tên file: ");
                     scanf("%s", filename);
                     unpublish_file(filename);
                     break;
                     
-                case 4: 
+                case 5: 
                     logout_user();
                     logged_in = 0; // Đặt trạng thái về chưa đăng nhập
                     printf("Đã đăng xuất!\n");

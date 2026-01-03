@@ -3,7 +3,7 @@
 
 #include "../protocol.h"
 
-// Hàm Client-Server
+// Hàm Client-Server Protocol
 int connect_to_server(const char* server_ip);
 int register_user(const char* email, const char* username, const char* password);
 int login_user(const char* email, const char* password);
@@ -13,5 +13,6 @@ void publish_file(const char* filename);
 void unpublish_file(const char* filename);
 void logout_user(void);
 void report_download_status(const char* filehash, int success);
+BrowseFilesResponse browse_files(void);
 
 #endif

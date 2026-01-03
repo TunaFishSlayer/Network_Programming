@@ -62,11 +62,14 @@ int add_user(const char* email, const char* username, const char* password);
 int authenticate(const char* email, const char* password);
 void publish_file(const char* filename, const char* filehash, const char* owner_email, long file_size, int chunk_size);
 int unpublish_file(const char* filehash, const char* owner_email);
+SearchResponse browse_all_files(void);
 SearchResponse search_files(const char* keyword);
 FindResponse find_peers(const char* filehash);
 void ensure_data_files_exist();
 int get_username_by_email(const char* email, char* username_out);
 int get_file_owner_info(const char* filehash, char* ip, int* port);
+int is_user_already_connected(const char* email);
+
 
 // --- Khai báo các hàm Session/Verification ---
 char* create_session(const char* email);

@@ -18,19 +18,21 @@
 #define MAX_BITMAP_SIZE 10000
 #define SERVER_PORT 8888
 
-// Mã lệnh giao thức Client-Server
+// Command codes
 typedef enum {
     CMD_REGISTER = 1,
     CMD_LOGIN = 2,
     CMD_SEARCH = 3,
-    CMD_FIND = 4,           
+    CMD_FIND = 4,
     CMD_PUBLISH = 5,
     CMD_UNPUBLISH = 6,
     CMD_LOGOUT = 7,
-    CMD_DOWNLOAD_STATUS = 8  // Báo cáo trạng thái download
+    CMD_DOWNLOAD_STATUS = 8,
+    CMD_BROWSE_FILES = 9       
+
 } CommandCode;
 
-// Mã phản hồi
+// Response codes
 typedef enum {
     RESP_SUCCESS = 100,
     RESP_FAIL = 101,
@@ -40,10 +42,11 @@ typedef enum {
     RESP_INVALID_TOKEN = 105,
     RESP_UNAUTHORIZED = 106,
     RESP_FILE_NOT_OWNED = 107,
-    RESP_INVALID_INPUT = 108
+    RESP_INVALID_INPUT = 108,
+    RESP_ALREADY_LOGGED_IN = 109
 } ResponseCode;
 
-// Mã lệnh P2P (Client-Client)
+// P2P Command codes
 typedef enum {
     P2P_HANDSHAKE = 201,
     P2P_HANDSHAKE_RES = 202,
@@ -53,33 +56,59 @@ typedef enum {
     P2P_DISCONNECT = 206
 } P2PCommand;
 
-// Status cho handshake
+// Handshake status
 typedef enum {
     HANDSHAKE_OK = 0,
     HANDSHAKE_NO_FILE = 1,
     HANDSHAKE_BUSY = 2
 } HandshakeStatus;
 
-// Thông điệp chính Client-Server
+// ============================================================================
+// SEPARATED MESSAGE STRUCTURES FOR CLIENT-SERVER COMMUNICATION
+// ============================================================================
+
+// Common header for all messages
 typedef struct {
     int command;
+    uint32_t request_id;
+} MessageHeader;
+
+// --- REGISTER ---
+typedef struct {
+    MessageHeader header;
     char email[MAX_EMAIL];
     char username[MAX_USERNAME];
     char password[MAX_PASSWORD];
-    char filename[MAX_FILENAME];
-    char filehash[MAX_HASH];
-    char ip[MAX_IP];
-    int port;
-    long file_size;
-    int chunk_size;
-    char access_token[64];
-    int status;
-    uint32_t request_id;          // ID của request để map response trong chế độ bất đồng bộ
-    int original_request;         // Server sẽ echo lại request command gốc
-    uint32_t validation_checksum; // Để validate data integrity
-} Message;
+} RegisterRequest;
 
-// Thông tin file trong kết quả tìm kiếm
+typedef struct {
+    MessageHeader header;
+    int status;  // RESP_SUCCESS or RESP_USER_EXISTS
+} RegisterResponse;
+
+// --- LOGIN ---
+typedef struct {
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char password[MAX_PASSWORD];
+    int port;  // P2P listening port
+} LoginRequest;
+
+typedef struct {
+    MessageHeader header;
+    int status;  // RESP_SUCCESS or RESP_INVALID_CRED
+    char username[MAX_USERNAME];
+    char access_token[64];
+} LoginResponse;
+
+// --- SEARCH ---
+typedef struct {
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char access_token[64];
+    char keyword[MAX_FILENAME];
+} SearchRequest;
+
 typedef struct {
     char filename[MAX_FILENAME];
     char filehash[MAX_HASH];
@@ -87,37 +116,151 @@ typedef struct {
     int chunk_size;
 } SearchFileInfo;
 
-// Phản hồi tìm kiếm file
 typedef struct {
-    int response_code;
+    MessageHeader header;
+    int status;  // RESP_SUCCESS or RESP_NOT_FOUND
     int count;
     SearchFileInfo files[100];
 } SearchResponse;
 
-// Thông tin peer
+
+// --- BROWSE FILES ---
+typedef struct {
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char access_token[64];
+} BrowseFilesRequest;
+
+typedef struct {
+    MessageHeader header;
+    int status;      // RESP_SUCCESS or RESP_INVALID_TOKEN
+    int count;
+    SearchFileInfo files[100];
+} BrowseFilesResponse;
+
+// --- FIND PEERS ---
+typedef struct {
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char access_token[64];
+    char filehash[MAX_HASH];
+} FindRequest;
+
 typedef struct {
     char ip[MAX_IP];
     int port;
 } PeerInfo;
 
-// Phản hồi FIND - danh sách peers có file
 typedef struct {
-    int response_code;
+    MessageHeader header;
+    int status;  // RESP_SUCCESS or RESP_NOT_FOUND
     int count;
     PeerInfo peers[50];
 } FindResponse;
 
-// Thông điệp P2P
+// --- PUBLISH ---
 typedef struct {
-    int command;
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char access_token[64];
+    char filename[MAX_FILENAME];
     char filehash[MAX_HASH];
-    int status;
+    char ip[MAX_IP];
+    int port;
+    long file_size;
+    int chunk_size;
+} PublishRequest;
+
+typedef struct {
+    MessageHeader header;
+    int status;  // RESP_SUCCESS or error codes
+} PublishResponse;
+
+// --- UNPUBLISH ---
+typedef struct {
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char access_token[64];
+    char filehash[MAX_HASH];
+} UnpublishRequest;
+
+typedef struct {
+    MessageHeader header;
+    int status;  // RESP_SUCCESS or error codes
+} UnpublishResponse;
+
+// --- LOGOUT ---
+typedef struct {
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char access_token[64];
+} LogoutRequest;
+
+typedef struct {
+    MessageHeader header;
+    int status;  // RESP_SUCCESS
+} LogoutResponse;
+
+// --- DOWNLOAD STATUS ---
+typedef struct {
+    MessageHeader header;
+    char email[MAX_EMAIL];
+    char access_token[64];
+    char filehash[MAX_HASH];
+    int download_success;  // 1 = success, 0 = failed
+} DownloadStatusRequest;
+
+typedef struct {
+    MessageHeader header;
+    int status;  // RESP_SUCCESS
+} DownloadStatusResponse;
+
+// ============================================================================
+// P2P PROTOCOL STRUCTURES
+// ============================================================================
+
+typedef struct {
+    int command;        // P2PCommand
+    uint32_t length;    // payload length
+} P2PHeader;
+
+// ---- HANDSHAKE ----
+typedef struct {
+    char filehash[MAX_HASH];
+} P2PHandshakeReq;
+
+typedef struct {
+    int status; // HANDSHAKE_OK / HANDSHAKE_NO_FILE
+} P2PHandshakeRes;
+
+// ---- BITMAP ----
+typedef struct {
+    int total_chunks;
+    int bitmap_size;
+    char bitmap[];   // flexible array
+} P2PBitmap;
+
+// ---- REQUEST CHUNK ----
+typedef struct {
+    int chunk_index;
+} P2PChunkRequest;
+
+// ---- CHUNK HEADER ----
+typedef struct {
     int chunk_index;
     int chunk_size;
-    char bitmap[MAX_BITMAP_SIZE];
-    int bitmap_size;
-} P2PMessage;
+} P2PChunkHeader;
+
 
 #pragma pack(pop)
+
+// ============================================================================
+// HELPER FUNCTIONS FOR REQUEST ID GENERATION
+// ============================================================================
+
+static inline uint32_t generate_request_id(void) {
+    static uint32_t counter = 0;
+    return __sync_add_and_fetch(&counter, 1);
+}
 
 #endif

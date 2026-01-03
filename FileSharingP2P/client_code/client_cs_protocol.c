@@ -6,8 +6,22 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
-#include "../serialize_helper.h"
 #include <errno.h>
+
+// Helper function to receive full struct
+static int recv_full(int sock, void* buffer, size_t size) {
+    char* buf = (char*)buffer;
+    size_t total = 0;
+    
+    while (total < size) {
+        int bytes = recv(sock, buf + total, size - total, 0);
+        if (bytes <= 0) {
+            return bytes;
+        }
+        total += bytes;
+    }
+    return total;
+}
 
 // Kết nối đến server
 int connect_to_server(const char* server_ip) {
@@ -33,173 +47,209 @@ int connect_to_server(const char* server_ip) {
 
 // Đăng ký với email
 int register_user(const char* email, const char* username, const char* password) {
-    Message msg, response;
-    memset(&msg, 0, sizeof(Message));
+    RegisterRequest req;
+    RegisterResponse resp;
     
-    msg.command = CMD_REGISTER;
-    strcpy(msg.email, email);
-    strcpy(msg.username, username);
-    strcpy(msg.password, password);
+    memset(&req, 0, sizeof(RegisterRequest));
     
-    send(server_sock, &msg, sizeof(Message), 0);
-    recv(server_sock, &response, sizeof(Message), 0);
+    req.header.command = CMD_REGISTER;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, email);
+    strcpy(req.username, username);
+    strcpy(req.password, password);
     
-    return (response.command == RESP_SUCCESS);
+    printf("[DEBUG] Sending REGISTER request (request_id: %u)\n", req.header.request_id);
+    printf("        Email: %s, Username: %s\n", email, username);
+    
+    if (send(server_sock, &req, sizeof(RegisterRequest), 0) < 0) {
+        perror("Send register request failed");
+        return 0;
+    }
+    
+    if (recv_full(server_sock, &resp, sizeof(RegisterResponse)) <= 0) {
+        perror("Receive register response failed");
+        return 0;
+    }
+    
+    printf("[DEBUG] Received REGISTER response (status: %d)\n", resp.status);
+    
+    return (resp.status == RESP_SUCCESS);
 }
 
 // Đăng nhập với email
 int login_user(const char* email, const char* password) {
-    Message msg, response;
-    memset(&msg, 0, sizeof(Message));
+    LoginRequest req;
+    LoginResponse resp;
     
-    msg.command = CMD_LOGIN;
-    strcpy(msg.email, email);
-    strcpy(msg.password, password);
+    memset(&req, 0, sizeof(LoginRequest));
     
-    msg.port = p2p_listening_port;
+    req.header.command = CMD_LOGIN;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, email);
+    strcpy(req.password, password);
+    req.port = p2p_listening_port;
     
-    printf("[DEBUG] Logging in with P2P port: %d\n", p2p_listening_port);
+    printf("[DEBUG] Sending LOGIN request (request_id: %u)\n", req.header.request_id);
+    printf("        Email: %s, P2P Port: %d\n", email, p2p_listening_port);
     
-    send(server_sock, &msg, sizeof(Message), 0);
-    recv(server_sock, &response, sizeof(Message), 0);
-    
-    if (response.command == RESP_SUCCESS) {
-        strcpy(current_email, email);
-        strcpy(current_username, response.username);
-        strcpy(current_token, response.access_token);
-        printf("[DEBUG] Login successful. Server now knows P2P port: %d\n", p2p_listening_port);
-        return 1;
+    if (send(server_sock, &req, sizeof(LoginRequest), 0) < 0) {
+        perror("Send login request failed");
+        return 0;
     }
+    
+    if (recv_full(server_sock, &resp, sizeof(LoginResponse)) <= 0) {
+        perror("Receive login response failed");
+        return 0;
+    }
+    
+    printf("[DEBUG] Received LOGIN response (status: %d)\n", resp.status);
+    
+    if (resp.status == RESP_SUCCESS) {
+        strcpy(current_email, email);
+        strcpy(current_username, resp.username);
+        strcpy(current_token, resp.access_token);
+        printf("[DEBUG] Login successful. Username: %s\n", current_username);
+        return 1;
+    } else if (resp.status == RESP_ALREADY_LOGGED_IN) {
+        printf("[ERROR] Tài khoản này đã đăng nhập từ vị trí khác!\n");
+        printf("        Vui lòng đăng xuất phiên làm việc cũ trước.\n");
+        return 0;
+    }
+    
     return 0;
+}
+
+BrowseFilesResponse browse_files(void) {
+    BrowseFilesRequest req;
+    BrowseFilesResponse resp;
+
+    memset(&req, 0, sizeof(req));
+    memset(&resp, 0, sizeof(resp));
+
+    req.header.command = CMD_BROWSE_FILES;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, current_email);
+    strcpy(req.access_token, current_token);
+
+    printf("[DEBUG] Sending BROWSE request (request_id: %u)\n",
+           req.header.request_id);
+
+    if (send(server_sock, &req, sizeof(req), 0) < 0) {
+        perror("Send browse request failed");
+        return resp;
+    }
+
+    if (recv_full(server_sock, &resp, sizeof(resp)) <= 0) {
+        perror("Receive browse response failed");
+        return resp;
+    }
+
+    printf("[DEBUG] Browse result: %d file(s)\n", resp.count);
+
+    for (int i = 0; i < resp.count; i++) {
+        printf("  [%d] %s | %.16s... | %ld bytes\n",
+               i + 1,
+               resp.files[i].filename,
+               resp.files[i].filehash,
+               resp.files[i].file_size);
+    }
+
+    return resp;
 }
 
 // Tìm kiếm file
 SearchResponse search_file(const char* keyword) {
-    Message msg, response;
-    SearchResponse search_resp;
-    memset(&msg, 0, sizeof(Message));
-    memset(&response, 0, sizeof(Message));
-    memset(&search_resp, 0, sizeof(SearchResponse));
+    SearchRequest req;
+    SearchResponse resp;
     
-    // Prepare search request
-    msg.command = CMD_SEARCH;
-    strcpy(msg.filename, keyword);
-    strcpy(msg.email, current_email);
-    strcpy(msg.access_token, current_token);
+    memset(&req, 0, sizeof(SearchRequest));
+    memset(&resp, 0, sizeof(SearchResponse));
     
-    printf("[DEBUG] Sending search request for: %s\n", keyword);
+    req.header.command = CMD_SEARCH;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, current_email);
+    strcpy(req.access_token, current_token);
+    strcpy(req.keyword, keyword);
     
-    // Send search request with error checking
-    if (send(server_sock, &msg, sizeof(Message), 0) < 0) {
-        perror("[ERROR] send search request failed");
-        search_resp.count = 0;
-        return search_resp;
+    printf("[DEBUG] Sending SEARCH request (request_id: %u)\n", req.header.request_id);
+    printf("        Keyword: %s\n", keyword);
+    
+    if (send(server_sock, &req, sizeof(SearchRequest), 0) < 0) {
+        perror("Send search request failed");
+        resp.count = 0;
+        return resp;
     }
     
     // Set receive timeout
     struct timeval tv = {10, 0}; // 10 seconds timeout
     setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     
-    // 1. First receive the Message response
-    printf("[DEBUG] Waiting for search response...\n");
-    int bytes_received = recv(server_sock, &response, sizeof(Message), 0);
-    if (bytes_received <= 0) {
-        perror("[ERROR] receive search response failed");
-       // printf("[DEBUG] Received %d bytes (expected %zu)\n", bytes_received, sizeof(Message));
-        search_resp.count = 0;
-        return search_resp;
+    if (recv_full(server_sock, &resp, sizeof(SearchResponse)) <= 0) {
+        perror("Receive search response failed");
+        resp.count = 0;
+        return resp;
     }
     
-    printf("[DEBUG] Received response: command=%d, status=%d\n", response.command, response.status);
+    printf("[DEBUG] Received SEARCH response (status: %d, count: %d)\n", 
+           resp.status, resp.count);
     
-    // 2. Then receive the SearchResponse
-    printf("[DEBUG] Receiving search results...\n");
-    char* resp_ptr = (char*)&search_resp;
-    int total_bytes = 0;
-    int remaining = sizeof(SearchResponse);
-    
-    while (remaining > 0) {
-        int bytes = recv(server_sock, resp_ptr + total_bytes, remaining, 0);
-        if (bytes <= 0) {
-            perror("[ERROR] receive search results failed");
-            //printf("[DEBUG] Received %d/%zu bytes of search results\n",  total_bytes, sizeof(SearchResponse));
-            search_resp.count = 0;
-            return search_resp;
-        }
-        total_bytes += bytes;
-        remaining -= bytes;
-        //printf("[DEBUG] Received %d bytes of search results (%d/%zu total)\n", bytes, total_bytes, sizeof(SearchResponse));
+    for (int i = 0; i < resp.count && i < 5; i++) {
+        printf("        [%d] %s (%.16s...) %ld bytes\n", 
+               i+1, resp.files[i].filename, 
+               resp.files[i].filehash, resp.files[i].file_size);
     }
-    printf("[DEBUG] Search completed. Found %d results\n", search_resp.count);
-    return search_resp;
+    
+    return resp;
 }
 
 // Tìm peers có file hash cụ thể
 FindResponse find_peers_for_file(const char* filehash) {
-    Message msg, response;
-    FindResponse find_resp;
-    memset(&msg, 0, sizeof(Message));
-    memset(&response, 0, sizeof(Message));
-    memset(&find_resp, 0, sizeof(FindResponse));
+    FindRequest req;
+    FindResponse resp;
     
-    // Prepare find peers request
-    msg.command = CMD_FIND;
-    strcpy(msg.filehash, filehash);
-    strcpy(msg.email, current_email);
-    strcpy(msg.access_token, current_token);
+    memset(&req, 0, sizeof(FindRequest));
+    memset(&resp, 0, sizeof(FindResponse));
     
-    printf("[DEBUG] Sending find peers request for filehash: %s\n", filehash);
+    req.header.command = CMD_FIND;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, current_email);
+    strcpy(req.access_token, current_token);
+    strcpy(req.filehash, filehash);
     
-    // Send find peers request with error checking
-    if (send(server_sock, &msg, sizeof(Message), 0) < 0) {
-        perror("[ERROR] send find peers request failed");
-        find_resp.count = 0;
-        return find_resp;
+    printf("[DEBUG] Sending FIND request (request_id: %u)\n", req.header.request_id);
+    printf("        Filehash: %.16s...\n", filehash);
+    
+    if (send(server_sock, &req, sizeof(FindRequest), 0) < 0) {
+        perror("Send find request failed");
+        resp.count = 0;
+        return resp;
     }
     
     // Set receive timeout
     struct timeval tv = {10, 0}; // 10 seconds timeout
     setsockopt(server_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     
-    // 1. First receive the Message response
-    printf("[DEBUG] Waiting for find peers response...\n");
-    int bytes_received = recv(server_sock, &response, sizeof(Message), 0);
-    if (bytes_received <= 0) {
-        perror("[ERROR] receive find peers response failed");
-        //printf("[DEBUG] Received %d bytes (expected %zu)\n", bytes_received, sizeof(Message));
-        find_resp.count = 0;
-        return find_resp;
+    if (recv_full(server_sock, &resp, sizeof(FindResponse)) <= 0) {
+        perror("Receive find response failed");
+        resp.count = 0;
+        return resp;
     }
     
-    printf("[DEBUG] Received response: command=%d, status=%d\n", 
-          response.command, response.status);
+    printf("[DEBUG] Received FIND response (status: %d, count: %d)\n", 
+           resp.status, resp.count);
     
-    if (response.command != RESP_SUCCESS) {
-        printf("[ERROR] Server returned error status: %d\n", response.status);
-        find_resp.count = 0;
-        return find_resp;
+    for (int i = 0; i < resp.count && i < 5; i++) {
+        printf("        [%d] Peer: %s:%d\n", 
+               i+1, resp.peers[i].ip, resp.peers[i].port);
     }
     
-    // 2. Then receive the FindResponse
-    printf("[DEBUG] Receiving find peers results...\n");
-    char buffer[4096]; // Adjust size as needed
-    bytes_received = recv(server_sock, buffer, sizeof(buffer), 0);
-    if (bytes_received <= 0) {
-        perror("[ERROR] receive find peers results failed");
-        find_resp.count = 0;
-        return find_resp;
-    }
-    
-    // Deserialize the response
-    deserialize_find_response(buffer, &find_resp);
-    printf("[DEBUG] Find peers completed. Found %d peers\n", find_resp.count);
-    
-    return find_resp;
+    return resp;
 }
 
 // Công bố file với hash và chunk_size
 void publish_file(const char* filename) {
-    Message msg, response;
+    PublishRequest req;
+    PublishResponse resp;
     char filepath[MAX_FILEPATH];
     struct stat st;
     
@@ -222,32 +272,50 @@ void publish_file(const char* filename) {
     
     printf("DEBUG CLIENT: Calculated hash: %s\n", filehash);
     
-    memset(&msg, 0, sizeof(Message));
-    msg.command = CMD_PUBLISH;
-    strcpy(msg.filename, filename);
-    strcpy(msg.filehash, filehash);
-    strcpy(msg.email, current_email);
-    strcpy(msg.access_token, current_token);  // Gửi token
-    strcpy(msg.ip, "127.0.0.1");
-    msg.port = p2p_listening_port;
-    msg.file_size = st.st_size;
-    msg.chunk_size = CHUNK_SIZE;
+    memset(&req, 0, sizeof(PublishRequest));
     
-    send(server_sock, &msg, sizeof(Message), 0);
-    recv(server_sock, &response, sizeof(Message), 0);
+    req.header.command = CMD_PUBLISH;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, current_email);
+    strcpy(req.access_token, current_token);
+    strcpy(req.filename, filename);
+    strcpy(req.filehash, filehash);
+    strcpy(req.ip, client_ip);
+    req.port = p2p_listening_port;
+    req.file_size = st.st_size;
+    req.chunk_size = CHUNK_SIZE;
     
-    if (response.command == RESP_SUCCESS) {
-        printf("✓ Công bố file: %s\n", filename);
+    printf("[DEBUG] Sending PUBLISH request (request_id: %u)\n", req.header.request_id);
+    printf("        Filename: %s, Size: %ld bytes\n", filename, st.st_size);
+    printf("        Hash: %.16s...\n", filehash);
+    
+    if (send(server_sock, &req, sizeof(PublishRequest), 0) < 0) {
+        perror("Send publish request failed");
+        return;
+    }
+    
+    if (recv_full(server_sock, &resp, sizeof(PublishResponse)) <= 0) {
+        perror("Receive publish response failed");
+        return;
+    }
+    
+    printf("[DEBUG] Received PUBLISH response (status: %d)\n", resp.status);
+    
+    if (resp.status == RESP_SUCCESS) {
+        printf("Công bố file: %s\n", filename);
         printf("  Hash: %s\n", filehash);
         printf("  Size: %ld bytes\n", st.st_size);
     } else {
-        printf("✗ Công bố file thất bại!\n");
+        printf("Công bố file thất bại! (Status: %d)\n", resp.status);
     }
 }
 
 // Hủy công bố
 void unpublish_file(const char* filename) {
+    UnpublishRequest req;
+    UnpublishResponse resp;
     char filepath[MAX_FILEPATH];
+    
     snprintf(filepath, sizeof(filepath), "%s%s", shared_dir, filename);
     
     char filehash[MAX_HASH];
@@ -258,35 +326,65 @@ void unpublish_file(const char* filename) {
         return;
     }
     
-    Message msg, response;
-    memset(&msg, 0, sizeof(Message));
+    memset(&req, 0, sizeof(UnpublishRequest));
     
-    msg.command = CMD_UNPUBLISH;
-    strcpy(msg.filehash, filehash);
-    strcpy(msg.email, current_email);
-    strcpy(msg.access_token, current_token);  // Gửi token
+    req.header.command = CMD_UNPUBLISH;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, current_email);
+    strcpy(req.access_token, current_token);
+    strcpy(req.filehash, filehash);
     
-    send(server_sock, &msg, sizeof(Message), 0);
-    recv(server_sock, &response, sizeof(Message), 0);
+    printf("[DEBUG] Sending UNPUBLISH request (request_id: %u)\n", req.header.request_id);
+    printf("        Filehash: %.16s...\n", filehash);
     
-    if (response.command == RESP_SUCCESS) {
+    if (send(server_sock, &req, sizeof(UnpublishRequest), 0) < 0) {
+        perror("Send unpublish request failed");
+        return;
+    }
+    
+    if (recv_full(server_sock, &resp, sizeof(UnpublishResponse)) <= 0) {
+        perror("Receive unpublish response failed");
+        return;
+    }
+    
+    printf("[DEBUG] Received UNPUBLISH response (status: %d)\n", resp.status);
+    
+    if (resp.status == RESP_SUCCESS) {
         printf("Hủy công bố file thành công!\n");
+    } else if (resp.status == RESP_FILE_NOT_OWNED) {
+        printf("Hủy công bố file thất bại! Bạn không sở hữu file này.\n");
+    } else if (resp.status == RESP_INVALID_TOKEN) {
+        printf("Hủy công bố file thất bại! Token không hợp lệ.\n");
     } else {
-        printf("Hủy công bố file thất bại!\n");
+        printf("Hủy công bố file thất bại! (Status: %d)\n", resp.status);
     }
 }
 
 // Đăng xuất
 void logout_user(void) {
-    Message msg, response;
-    memset(&msg, 0, sizeof(Message));
+    LogoutRequest req;
+    LogoutResponse resp;
     
-    msg.command = CMD_LOGOUT;
-    strcpy(msg.email, current_email);
-    strcpy(msg.access_token, current_token);
+    memset(&req, 0, sizeof(LogoutRequest));
     
-    send(server_sock, &msg, sizeof(Message), 0);
-    recv(server_sock, &response, sizeof(Message), 0);
+    req.header.command = CMD_LOGOUT;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, current_email);
+    strcpy(req.access_token, current_token);
+    
+    printf("[DEBUG] Sending LOGOUT request (request_id: %u)\n", req.header.request_id);
+    
+    if (send(server_sock, &req, sizeof(LogoutRequest), 0) < 0) {
+        perror("Send logout request failed");
+        return;
+    }
+    
+    if (recv_full(server_sock, &resp, sizeof(LogoutResponse)) <= 0) {
+        perror("Receive logout response failed");
+        return;
+    }
+    
+    printf("[DEBUG] Received LOGOUT response (status: %d)\n", resp.status);
     
     // Clear token và email
     memset(current_token, 0, sizeof(current_token));
@@ -296,17 +394,30 @@ void logout_user(void) {
 
 // Báo cáo trạng thái download
 void report_download_status(const char* filehash, int success) {
-    Message msg, response;
-    memset(&msg, 0, sizeof(Message));
+    DownloadStatusRequest req;
+    DownloadStatusResponse resp;
     
-    msg.command = CMD_DOWNLOAD_STATUS;
-    strcpy(msg.filehash, filehash);
-    strcpy(msg.email, current_email);
-    strcpy(msg.access_token, current_token);
-    msg.status = success ? 1 : 0;  // 1 = success, 0 = failed
+    memset(&req, 0, sizeof(DownloadStatusRequest));
     
-    send(server_sock, &msg, sizeof(Message), 0);
-    recv(server_sock, &response, sizeof(Message), 0);
+    req.header.command = CMD_DOWNLOAD_STATUS;
+    req.header.request_id = generate_request_id();
+    strcpy(req.email, current_email);
+    strcpy(req.access_token, current_token);
+    strcpy(req.filehash, filehash);
+    req.download_success = success;
     
-    printf("DEBUG: Download status reported to server (status: %d)\n", success);
+    printf("[DEBUG] Sending DOWNLOAD_STATUS request (request_id: %u)\n", req.header.request_id);
+    printf("        Status: %s\n", success ? "SUCCESS" : "FAILED");
+    
+    if (send(server_sock, &req, sizeof(DownloadStatusRequest), 0) < 0) {
+        perror("Send download status request failed");
+        return;
+    }
+    
+    if (recv_full(server_sock, &resp, sizeof(DownloadStatusResponse)) <= 0) {
+        perror("Receive download status response failed");
+        return;
+    }
+    
+    printf("[DEBUG] Download status reported to server (response status: %d)\n", resp.status);
 }
