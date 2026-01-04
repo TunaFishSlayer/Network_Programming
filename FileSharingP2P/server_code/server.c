@@ -3,6 +3,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <ifaddrs.h>
 #include <sys/time.h>
 #include <pthread.h>
 #include "../protocol.h"
@@ -52,6 +54,64 @@ static int recv_full(int sock, void* buffer, size_t size) {
         total += bytes;
     }
     return total;
+}
+
+void display_server_ips() {
+    struct ifaddrs *ifaddr, *ifa;
+    char ip[INET_ADDRSTRLEN];
+    int found_ips = 0;
+    
+    printf("\n=== Server Network Addresses ===\n");
+    
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs failed");
+        printf("Could not determine IP addresses\n");
+        return;
+    }
+    
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
+            continue;
+        
+        // Only show IPv4 addresses
+        if (ifa->ifa_addr->sa_family == AF_INET) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)ifa->ifa_addr;
+            inet_ntop(AF_INET, &addr->sin_addr, ip, INET_ADDRSTRLEN);
+            
+            // Skip loopback (127.x.x.x)
+            if (strncmp(ip, "127.", 4) == 0) {
+                continue;
+            }
+            
+            // Display interface name and IP
+            printf("  %-10s: %s", ifa->ifa_name, ip);
+            
+            // Add helpful labels
+            if (strncmp(ifa->ifa_name, "eth", 3) == 0) {
+                printf(" (Ethernet)");
+            } else if (strncmp(ifa->ifa_name, "wlan", 4) == 0) {
+                printf(" (WiFi)");
+            } else if (strncmp(ifa->ifa_name, "wlp", 3) == 0) {
+                printf(" (WiFi)");
+            } else if (strncmp(ifa->ifa_name, "enp", 3) == 0) {
+                printf(" (Ethernet)");
+            }
+            
+            printf("\n");
+            found_ips++;
+        }
+    }
+    
+    freeifaddrs(ifaddr);
+    
+    if (found_ips == 0) {
+        printf("  No network interfaces found (only loopback available)\n");
+        printf("  Server accessible at: 127.0.0.1 (localhost only)\n");
+    } else {
+        printf("\n  Clients can connect using any of the above IPs\n");
+    }
+    
+    printf("================================\n\n");
 }
 
 void* handle_client(void* arg) {
@@ -497,6 +557,7 @@ int main() {
         exit(1);
     }
     
+    display_server_ips();
     printf("Server running on port %d...\n", SERVER_PORT);
     printf("Waiting for connections...\n\n");
     

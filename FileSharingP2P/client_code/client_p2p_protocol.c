@@ -168,13 +168,13 @@ int download_file_chunked(const char* filehash, const char* filename,
         for (int i = 0; i < bitmap_payload_size; i++) {
             printf("%d", bitmap_payload[i]);
         }
-        printf("\n");
-        printf("[P2P] Bitmap size: %d, Available chunks: %d\n", bitmap_payload_size, available_chunks);
-        
+        printf("\n");        
         int available_chunks = 0;
         for (int i = 0; i < bitmap_payload_size; i++) {
             if (bitmap_payload[i] == 1) available_chunks++;
         }        
+        printf("[P2P] Available chunks: %d\n", available_chunks);
+        
         for (int i = 0; i < total_chunks; i++) {
             if (bitmap[i] == 1) {
                 printf("[P2P] Chunk %d is already downloaded\n", i);
