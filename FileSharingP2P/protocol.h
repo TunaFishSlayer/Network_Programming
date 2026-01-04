@@ -16,7 +16,7 @@
 #define CHUNK_SIZE 524288  // 512KB per chunk
 #define BUFFER_SIZE 4096
 #define MAX_BITMAP_SIZE 10000
-#define SERVER_PORT 8888
+#define SERVER_PORT 18888
 
 // Command codes
 typedef enum {

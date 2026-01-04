@@ -527,7 +527,6 @@ int main() {
     int server_sock;  
     struct sockaddr_in server_addr, client_addr;
     socklen_t addr_len = sizeof(client_addr);
-    
     printf("=== P2P File Sharing Server ===\n");
     printf("Initializing...\n\n");
     
