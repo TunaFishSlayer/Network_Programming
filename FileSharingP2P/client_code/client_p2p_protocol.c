@@ -1,6 +1,7 @@
 #include "client_p2p_protocol.h"
 #include "client_utils.h"
 #include "client_cs_protocol.h"
+#include "../protocol.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,48 +19,55 @@
 int send_all(int sock, const void* buf, int len) {
     int sent = 0;
     while (sent < len) {
-        int n = send(sock, (char*)buf + sent, len - sent, 0);
-        if (n <= 0) return -1;
-        sent += n;
+        int bytes = send(sock, buf + sent, len - sent, 0);
+        if (bytes <= 0) return -1;
+        sent += bytes;
     }
     return sent;
 }
 
 int recv_all(int sock, void* buf, int len) {
-    int recvd = 0;
-    while (recvd < len) {
-        int n = recv(sock, (char*)buf + recvd, len - recvd, 0);
-        if (n <= 0) return -1;
-        recvd += n;
+    int received = 0;
+    while (received < len) {
+        int bytes = recv(sock, buf + received, len - received, 0);
+        if (bytes <= 0) return -1;
+        received += bytes;
     }
-    return recvd;
+    return received;
 }
 
 /* =========================
-   CONNECT TO PEER
+   CONNECTION
    ========================= */
 
 int connect_to_peer_with_retry(const char* peer_ip, int peer_port) {
-    for (int attempt = 1; attempt <= 3; attempt++) {
+    int attempt = 0;
+    
+    while (attempt < 3) {
         int sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (sock < 0) continue;
-
+        if (sock < 0) {
+            attempt++;
+            continue;
+        }
+        
+        // Set timeout 5 giây
         set_socket_timeout(sock, 5);
-
-        struct sockaddr_in addr = {
-            .sin_family = AF_INET,
-            .sin_port = htons(peer_port)
-        };
-        inet_pton(AF_INET, peer_ip, &addr.sin_addr);
-
-        if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
-            printf("[P2P] Connected to %s:%d\n", peer_ip, peer_port);
+        
+        struct sockaddr_in peer_addr;
+        peer_addr.sin_family = AF_INET;
+        peer_addr.sin_port = htons(peer_port);
+        inet_pton(AF_INET, peer_ip, &peer_addr.sin_addr);
+        
+        if (connect(sock, (struct sockaddr*)&peer_addr, sizeof(peer_addr)) == 0) {
+            printf("Kết nối thành công với %s:%d\n", peer_ip, peer_port);
             return sock;
         }
-
+        
         close(sock);
-        printf("[P2P] Retry connect (%d/3)\n", attempt);
+        attempt++;
+        printf("Kết nối thất bại, thử lại... (%d/3)\n", attempt);
     }
+    
     return -1;
 }
 
@@ -68,22 +76,42 @@ int connect_to_peer_with_retry(const char* peer_ip, int peer_port) {
    ========================= */
 
 int handshake_with_peer(int sock, const char* filehash) {
-    P2PHeader hdr = { P2P_HANDSHAKE, sizeof(P2PHandshakeReq) };
     P2PHandshakeReq req;
+    memset(&req, 0, sizeof(req));
     strcpy(req.filehash, filehash);
-
-    send_all(sock, &hdr, sizeof(hdr));
-    send_all(sock, &req, sizeof(req));
-    printf("[SEND] HANDSHAKE %s\n", filehash);
-
-    P2PHeader rh;
-    if (recv_all(sock, &rh, sizeof(rh)) < 0) return 0;
-
+    
+    printf("[P2P] Connecting to peer...\n");
+    printf("[P2P] Filehash: %s\n", filehash);
+    
+    // Send header first
+    MessageHeader hdr;
+    hdr.command = P2P_HANDSHAKE;
+    hdr.request_id = generate_request_id();
+    
+    if (send_all(sock, &hdr, sizeof(hdr)) < 0) return 0;
+    if (send_all(sock, &req, sizeof(req)) < 0) return 0;
+    
+    printf("[P2P] Waiting for handshake response...\n");
+    
+    // Receive response header
+    MessageHeader resp_hdr;
+    if (recv_all(sock, &resp_hdr, sizeof(resp_hdr)) < 0) return 0;
+    
     P2PHandshakeRes res;
-    recv_all(sock, &res, sizeof(res));
-    printf("[RECV] HANDSHAKE_RES status=%d\n", res.status);
-
-    return res.status == HANDSHAKE_OK;
+    if (recv_all(sock, &res, sizeof(res)) < 0) return 0;
+    
+    printf("[P2P] Received handshake response\n");
+    printf("[P2P] Command: %d, Status: %d\n", resp_hdr.command, res.status);
+    
+    if (resp_hdr.command == P2P_HANDSHAKE_RES && res.status == HANDSHAKE_OK) {
+        printf("[P2P] Handshake successful - peer has file\n");
+    } else if (resp_hdr.command == P2P_HANDSHAKE_RES && res.status == HANDSHAKE_NO_FILE) {
+        printf("[P2P] Handshake failed - peer does not have file\n");
+    } else {
+        printf("[P2P] Unexpected handshake response - cmd=%d, status=%d\n", resp_hdr.command, res.status);
+    }
+    
+    return (resp_hdr.command == P2P_HANDSHAKE_RES && res.status == HANDSHAKE_OK);
 }
 
 /* =========================
@@ -115,46 +143,90 @@ int download_file_chunked(const char* filehash, const char* filename,
         }
 
         /* ---- RECEIVE BITMAP ---- */
-        P2PHeader hdr;
-        recv_all(sock, &hdr, sizeof(hdr));
+        MessageHeader bitmap_hdr;
+        if (recv_all(sock, &bitmap_hdr, sizeof(bitmap_hdr)) < 0) {
+            close(sock);
+            continue;
+        }
 
-        int payload_size = hdr.length;
-        char* payload = malloc(payload_size);
-        recv_all(sock, payload, payload_size);
+        if (bitmap_hdr.command != P2P_BITMAP) {
+            close(sock);
+            continue;
+        }
 
-        P2PBitmap* bm = (P2PBitmap*)payload;
-        char* bm_data = payload + sizeof(P2PBitmap);
+        // Calculate bitmap payload size
+        int bitmap_payload_size = total_chunks;
+        char* bitmap_payload = malloc(bitmap_payload_size);
+        if (recv_all(sock, bitmap_payload, bitmap_payload_size) < 0) {
+            free(bitmap_payload);
+            close(sock);
+            continue;
+        }
 
-        printf("[RECV] BITMAP chunks=%d\n", bm->total_chunks);
-
+        printf("[P2P] Received bitmap from peer\n");
+        printf("[P2P] Bitmap: ");
+        for (int i = 0; i < bitmap_payload_size; i++) {
+            printf("%d", bitmap_payload[i]);
+        }
+        printf("\n");
+        printf("[P2P] Bitmap size: %d, Available chunks: %d\n", bitmap_payload_size, available_chunks);
+        
+        int available_chunks = 0;
+        for (int i = 0; i < bitmap_payload_size; i++) {
+            if (bitmap_payload[i] == 1) available_chunks++;
+        }        
         for (int i = 0; i < total_chunks; i++) {
-            if (bitmap[i] || bm_data[i] == 0) continue;
+            if (bitmap[i] == 1) {
+                printf("[P2P] Chunk %d is already downloaded\n", i);
+                continue;
+            }
+            
+            if (i >= bitmap_payload_size || bitmap_payload[i] == 0) {
+                printf("[P2P] Chunk %d is not available from this peer\n", i);
+                continue;
+            }
+            
+            printf("[P2P] Chunk %d is available from peer\n", i);
 
             /* ---- REQUEST CHUNK ---- */
-            P2PHeader rq = { P2P_REQUEST_CHUNK, sizeof(P2PChunkRequest) };
-            P2PChunkRequest cr = { .chunk_index = i };
+            P2PChunkRequest cr;
+            memset(&cr, 0, sizeof(cr));
+            cr.chunk_index = i;
+            
+            MessageHeader chunk_req_hdr;
+            chunk_req_hdr.command = P2P_REQUEST_CHUNK;
+            chunk_req_hdr.request_id = generate_request_id();
 
-            send_all(sock, &rq, sizeof(rq));
-            send_all(sock, &cr, sizeof(cr));
-            printf("[SEND] REQUEST CHUNK %d\n", i);
+            printf("[P2P] Requesting chunk %d from peer...\n", i);
+            printf("[P2P] Chunk %d/%d (size: %d bytes)\n", i + 1, total_chunks, chunk_size);
+
+            if (send_all(sock, &chunk_req_hdr, sizeof(chunk_req_hdr)) < 0) break;
+            if (send_all(sock, &cr, sizeof(cr)) < 0) break;
 
             /* ---- RECEIVE CHUNK HEADER ---- */
-            recv_all(sock, &hdr, sizeof(hdr));
+            MessageHeader chunk_resp_hdr;
+            if (recv_all(sock, &chunk_resp_hdr, sizeof(chunk_resp_hdr)) < 0) break;
+
+            if (chunk_resp_hdr.command != P2P_CHUNK_DATA) {
+                printf("[P2P] Unexpected chunk response - cmd=%d (expected P2P_CHUNK_DATA=%d)\n", 
+                       chunk_resp_hdr.command, P2P_CHUNK_DATA);
+                continue;
+            }
+
             P2PChunkHeader ch;
-            recv_all(sock, &ch, sizeof(ch));
+            if (recv_all(sock, &ch, sizeof(ch)) < 0) break;
 
             /* ---- RECEIVE CHUNK DATA ---- */
-            recv_all(sock,
-                     file_data + ch.chunk_index * chunk_size,
-                     ch.chunk_size);
+            int chunk_data_size = ch.chunk_size;
+            if (recv_all(sock, file_data + ch.chunk_index * chunk_size, chunk_data_size) < 0) break;
 
             bitmap[i] = 1;
             downloaded++;
-            printf("[RECV] CHUNK %d/%d size=%d\n",
-                   i + 1, total_chunks, ch.chunk_size);
+            printf("[P2P] Received chunk %d/%d (size: %d bytes, total: %d/%d)\n", 
+                   i + 1, total_chunks, chunk_data_size, downloaded, total_chunks);
         }
 
-        free(payload);
+        free(bitmap_payload);
         close(sock);
     }
 
@@ -186,11 +258,29 @@ void* handle_peer_download(void* arg) {
     int sock = *(int*)arg;
     free(arg);
 
-    P2PHeader hdr;
-    recv_all(sock, &hdr, sizeof(hdr));
+    // Receive handshake header and request
+    MessageHeader handshake_hdr;
+    if (recv_all(sock, &handshake_hdr, sizeof(handshake_hdr)) < 0) {
+        printf("[P2P] Error receiving handshake header\n");
+        close(sock);
+        return NULL;
+    }
+
+    if (handshake_hdr.command != P2P_HANDSHAKE) {
+        printf("[P2P] Unexpected handshake command - cmd=%d (expected P2P_HANDSHAKE=%d)\n", 
+               handshake_hdr.command, P2P_HANDSHAKE);
+        close(sock);
+        return NULL;
+    }
 
     P2PHandshakeReq req;
-    recv_all(sock, &req, sizeof(req));
+    if (recv_all(sock, &req, sizeof(req)) < 0) {
+        printf("[P2P] Error receiving handshake request\n");
+        close(sock);
+        return NULL;
+    }
+
+    printf("[P2P] Received handshake request for filehash: %.16s...\n", req.filehash);
 
     char filepath[MAX_FILEPATH] = "";
     DIR* dir = opendir(shared_dir);
@@ -210,10 +300,28 @@ void* handle_peer_download(void* arg) {
     P2PHandshakeRes res;
     res.status = (filepath[0]) ? HANDSHAKE_OK : HANDSHAKE_NO_FILE;
 
-    hdr.command = P2P_HANDSHAKE_RES;
-    hdr.length = sizeof(res);
-    send_all(sock, &hdr, sizeof(hdr));
-    send_all(sock, &res, sizeof(res));
+    MessageHeader resp_hdr;
+    resp_hdr.command = P2P_HANDSHAKE_RES;
+    resp_hdr.request_id = handshake_hdr.request_id;
+    
+    printf("[P2P] Sending handshake response - status: %d\n", res.status);
+    
+    if (send_all(sock, &resp_hdr, sizeof(resp_hdr)) < 0) {
+        close(sock);
+        return NULL;
+    }
+    if (send_all(sock, &res, sizeof(res)) < 0) {
+        close(sock);
+        return NULL;
+    }
+
+    if (res.status == HANDSHAKE_NO_FILE) {
+        printf("[P2P] Handshake failed - file not found\n");
+        close(sock);
+        return NULL;
+    }
+
+    printf("[P2P] Handshake successful - file found\n");
 
     if (res.status != HANDSHAKE_OK) {
         close(sock);
@@ -221,69 +329,114 @@ void* handle_peer_download(void* arg) {
     }
 
     FILE* fp = fopen(filepath, "rb");
+    if (!fp) {
+        printf("[P2P] Error opening file\n");
+        close(sock);
+        return NULL;
+    }
+    
     fseek(fp, 0, SEEK_END);
     long size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
 
     int total_chunks = (size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    printf("[P2P] Starting file transfer: %s (%d chunks, %ld bytes)\n", 
+           filepath, total_chunks, size);
 
     /* ---- SEND BITMAP ---- */
-    int bm_size = total_chunks;
-    hdr.command = P2P_BITMAP;
-    hdr.length = sizeof(P2PBitmap) + bm_size;
+    MessageHeader bitmap_hdr;
+    bitmap_hdr.command = P2P_BITMAP;
+    bitmap_hdr.request_id = handshake_hdr.request_id;
+    
+    printf("[P2P] Sending bitmap to peer\n");
+    
+    if (send_all(sock, &bitmap_hdr, sizeof(bitmap_hdr)) < 0) {
+        fclose(fp);
+        close(sock);
+        return NULL;
+    }
 
-    send_all(sock, &hdr, sizeof(hdr));
-
-    P2PBitmap bm = { total_chunks, bm_size };
-    send_all(sock, &bm, sizeof(bm));
-
-    char* full = malloc(bm_size);
-    memset(full, 1, bm_size);
-    send_all(sock, full, bm_size);
-    free(full);
+    // Send bitmap data (all chunks available)
+    char* bitmap_data = malloc(total_chunks);
+    memset(bitmap_data, 1, total_chunks); // All chunks available
+    if (send_all(sock, bitmap_data, total_chunks) < 0) {
+        free(bitmap_data);
+        fclose(fp);
+        close(sock);
+        return NULL;
+    }
+    free(bitmap_data);
+    printf("[P2P] Sent bitmap to peer\n");
 
     /* ---- SEND CHUNKS ---- */
-    while (recv_all(sock, &hdr, sizeof(hdr)) > 0) {
-        if (hdr.command != P2P_REQUEST_CHUNK) break;
+    while (1) {
+        MessageHeader chunk_req_hdr;
+        if (recv_all(sock, &chunk_req_hdr, sizeof(chunk_req_hdr)) <= 0) {
+            printf("[P2P] Error receiving chunk request\n");
+            break;
+        }
+
+        if (chunk_req_hdr.command != P2P_REQUEST_CHUNK) {
+            if (chunk_req_hdr.command == P2P_DISCONNECT) {
+                printf("[P2P] Peer disconnected\n");
+                break;
+            }
+            printf("[P2P] Unexpected command: %d\n", chunk_req_hdr.command);
+            continue;
+        }
 
         P2PChunkRequest cr;
-        recv_all(sock, &cr, sizeof(cr));
+        if (recv_all(sock, &cr, sizeof(cr)) <= 0) {
+            printf("[P2P] Error receiving chunk request details\n");
+            break;
+        }
 
         int idx = cr.chunk_index;
-        int csize = (idx == total_chunks - 1)
-                    ? size - idx * CHUNK_SIZE
-                    : CHUNK_SIZE;
+        if (idx >= total_chunks) {
+            printf("[P2P] Invalid chunk index - chunk_idx=%d (expected 0-%d)\n", idx, total_chunks - 1);
+            continue;
+        }
+
+        int csize = (idx == total_chunks - 1) ? (size - idx * CHUNK_SIZE) : CHUNK_SIZE;
 
         char* buf = malloc(csize);
         fseek(fp, idx * CHUNK_SIZE, SEEK_SET);
         fread(buf, 1, csize, fp);
 
-        hdr.command = P2P_CHUNK_DATA;
-        hdr.length = sizeof(P2PChunkHeader);
-        P2PChunkHeader ch = { idx, csize };
+        /* ---- SEND CHUNK HEADER ---- */
+        MessageHeader chunk_resp_hdr;
+        chunk_resp_hdr.command = P2P_CHUNK_DATA;
+        chunk_resp_hdr.request_id = chunk_req_hdr.request_id;
 
-        send_all(sock, &hdr, sizeof(hdr));
-        send_all(sock, &ch, sizeof(ch));
-        send_all(sock, buf, csize);
-        printf("[SEND] CHUNK %d size=%d\n", idx, csize);
+        P2PChunkHeader ch;
+        ch.chunk_index = idx;
+        ch.chunk_size = csize;
 
+        printf("[P2P] Sending chunk %d/%d to peer (size: %d bytes)\n", 
+               idx + 1, total_chunks, csize);
+
+        if (send_all(sock, &chunk_resp_hdr, sizeof(chunk_resp_hdr)) < 0) {
+            free(buf);
+            break;
+        }
+        if (send_all(sock, &ch, sizeof(ch)) < 0) {
+            free(buf);
+            break;
+        }
+        if (send_all(sock, buf, csize) < 0) {
+            free(buf);
+            break;
+        }
+
+        printf("[P2P] Sent chunk %d\n", idx + 1);
         free(buf);
     }
 
     fclose(fp);
-    printf("\n========================================\n");
-    printf("Hoàn tất gửi file\n");
-    printf("========================================\n");
-    printf("\n=== MENU ===\n");
-    printf("Người dùng: %s\n", current_username);
-    printf("1. Xem danh sách file chia sẻ\n");
-    printf("2. Tìm kiếm file\n");
-    printf("3. Công bố file\n");
-    printf("4. Hủy công bố file\n");
-    printf("5. Thoát/Đăng xuất\n");
-    printf("Chọn: ");
-    fflush(stdout);
     close(sock);
+    printf("\n========================================\n");
+    printf("File transfer completed: %s\n", filepath);
+    printf("========================================\n");
     return NULL;
 }
 

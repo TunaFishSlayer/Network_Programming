@@ -29,7 +29,6 @@ typedef enum {
     CMD_LOGOUT = 7,
     CMD_DOWNLOAD_STATUS = 8,
     CMD_BROWSE_FILES = 9       
-
 } CommandCode;
 
 // Response codes
@@ -219,22 +218,20 @@ typedef struct {
 // P2P PROTOCOL STRUCTURES
 // ============================================================================
 
-typedef struct {
-    int command;        // P2PCommand
-    uint32_t length;    // payload length
-} P2PHeader;
-
 // ---- HANDSHAKE ----
 typedef struct {
+    MessageHeader header;
     char filehash[MAX_HASH];
 } P2PHandshakeReq;
 
 typedef struct {
+    MessageHeader header;
     int status; // HANDSHAKE_OK / HANDSHAKE_NO_FILE
 } P2PHandshakeRes;
 
 // ---- BITMAP ----
 typedef struct {
+    MessageHeader header;
     int total_chunks;
     int bitmap_size;
     char bitmap[];   // flexible array
@@ -242,11 +239,13 @@ typedef struct {
 
 // ---- REQUEST CHUNK ----
 typedef struct {
+    MessageHeader header;
     int chunk_index;
 } P2PChunkRequest;
 
 // ---- CHUNK HEADER ----
 typedef struct {
+    MessageHeader header;
     int chunk_index;
     int chunk_size;
 } P2PChunkHeader;
