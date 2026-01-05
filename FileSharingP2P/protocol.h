@@ -82,7 +82,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS or RESP_USER_EXISTS
+    int status;  
 } RegisterResponse;
 
 // --- LOGIN ---
@@ -90,12 +90,12 @@ typedef struct {
     MessageHeader header;
     char email[MAX_EMAIL];
     char password[MAX_PASSWORD];
-    int port;  // P2P listening port
+    int port;  
 } LoginRequest;
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS or RESP_INVALID_CRED
+    int status;  
     char username[MAX_USERNAME];
     char access_token[64];
 } LoginResponse;
@@ -117,7 +117,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS or RESP_NOT_FOUND
+    int status;  
     int count;
     SearchFileInfo files[100];
 } SearchResponse;
@@ -132,7 +132,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;      // RESP_SUCCESS or RESP_INVALID_TOKEN
+    int status;      
     int count;
     SearchFileInfo files[100];
 } BrowseFilesResponse;
@@ -152,7 +152,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS or RESP_NOT_FOUND
+    int status;  
     int count;
     PeerInfo peers[50];
 } FindResponse;
@@ -172,7 +172,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS or error codes
+    int status;  
 } PublishResponse;
 
 // --- UNPUBLISH ---
@@ -185,7 +185,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS or error codes
+    int status;  
 } UnpublishResponse;
 
 // --- LOGOUT ---
@@ -197,7 +197,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS
+    int status;  
 } LogoutResponse;
 
 // --- DOWNLOAD STATUS ---
@@ -211,7 +211,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status;  // RESP_SUCCESS
+    int status;  
 } DownloadStatusResponse;
 
 // ============================================================================
@@ -226,7 +226,7 @@ typedef struct {
 
 typedef struct {
     MessageHeader header;
-    int status; // HANDSHAKE_OK / HANDSHAKE_NO_FILE
+    int status; 
 } P2PHandshakeRes;
 
 // ---- BITMAP ----
@@ -234,7 +234,7 @@ typedef struct {
     MessageHeader header;
     int total_chunks;
     int bitmap_size;
-    char bitmap[];   // flexible array
+    char bitmap[];   
 } P2PBitmap;
 
 // ---- REQUEST CHUNK ----
